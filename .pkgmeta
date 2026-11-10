@@ -1,10 +1,17 @@
 package-as: SimpleHeal
 enable-nolib-creation: no
 
+manual-changelog:
+  filename: CHANGELOG.md
+  markup-type: markdown
+
 ignore:
+  - .agents
   - .github
   - .gitignore
   - .gitattributes
   - .pkgmeta
+  - CHANGELOG.md
+  - RELEASE.md
   - tests
   - tests/test_simpleheal.lua
