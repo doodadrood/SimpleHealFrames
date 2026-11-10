@@ -1,0 +1,10 @@
+package-as: SimpleHeal
+enable-nolib-creation: no
+
+ignore:
+  - .github
+  - .gitignore
+  - .gitattributes
+  - .pkgmeta
+  - tests
+  - tests/test_simpleheal.lua

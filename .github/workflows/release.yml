@@ -1,0 +1,34 @@
+name: SimpleHeal CI & Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test-and-release:
+    name: Test, Package & Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install LuaJIT & Run Automated Test Gate
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y luajit
+          luajit -bl SimpleHeal.lua /dev/null
+          luajit tests/test_simpleheal.lua
+
+      - name: Package and Deploy to CurseForge & GitHub Releases
+        uses: BigWigsMods/packager@v2
+        env:
+          CF_API_KEY: ${{ secrets.CF_API_KEY }}
+          GITHUB_OAUTH: ${{ secrets.GITHUB_TOKEN }}

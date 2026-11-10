@@ -1,0 +1,26 @@
+# OS Metadata
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# Editor & IDE Directories
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Build & Packager Artifacts
+.release/
+*.zip
+*.tar.gz
+*.bak
+
+# Explicitly keep the headless test suite tracked
+!tests/
+!tests/test_simpleheal.lua

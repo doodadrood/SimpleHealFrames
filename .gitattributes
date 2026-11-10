@@ -1,0 +1,11 @@
+# Normalize line endings
+* text=auto eol=lf
+
+# Exclude development, CI/CD, and test files from git archive exports
+.gitattributes export-ignore
+.gitignore export-ignore
+.pkgmeta export-ignore
+.github export-ignore
+.github/** export-ignore
+tests export-ignore
+tests/** export-ignore
