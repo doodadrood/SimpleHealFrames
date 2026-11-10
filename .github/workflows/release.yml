@@ -29,6 +29,8 @@ jobs:
 
       - name: Package and Deploy to CurseForge & GitHub Releases
         uses: BigWigsMods/packager@v2
+        with:
+          args: -p 1786366
         env:
           CF_API_KEY: ${{ secrets.CF_API_KEY }}
           GITHUB_OAUTH: ${{ secrets.GITHUB_TOKEN }}

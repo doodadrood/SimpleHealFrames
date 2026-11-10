@@ -3,6 +3,6 @@
 ## Notes: Click-casting and unit frames.
 ## Version: @project-version@
 ## SavedVariablesPerCharacter: SimpleHealSettings, SimpleHealUnitBuffs
-# ## X-Curse-Project-ID: YOUR_CURSEFORGE_PROJECT_ID
+## X-Curse-Project-ID: 1786366
 
 SimpleHeal.lua
