@@ -41,4 +41,3 @@ Use this skill whenever the user asks to cut a release, bump the version, or dep
    git tag -a vX.Y.Z -m "Release vX.Y.Z"
    git push origin vX.Y.Z
    ```
-   Pushing the `v*` tag triggers `.github/workflows/release.yml` to run the CI test gate and publish the clean `SimpleHeal/` zip to GitHub Releases and CurseForge (`1786366`).

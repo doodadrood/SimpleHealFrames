@@ -16,12 +16,12 @@ luajit tests/test_simpleheal.lua
 *Abort immediately if any test fails or exits with a non-zero status.*
 
 ### Step 2: Update Versioning & Release Notes
-1.Determine the next semantic version tag (e.g. `v1.1.5`):
+1. Determine the next semantic version tag (e.g. `v1.1.6`):
 ```bash
 git tag --sort=-v:refname | head -n 5
 ```
 2. Prepend the new version section to `CHANGELOG.md` (used automatically by `BigWigsMods/packager` via `.pkgmeta`'s `manual-changelog` configuration to populate CurseForge and GitHub Release notes).
-3. Note: `SimpleHeal.toc` uses `## Version: @project-version@`, which `BigWigsMods/packager` automatically replaces with the exact Git tag string (e.g. `v1.1.5`) inside the packaged zip archive.
+3. Ensure `SimpleHeal.toc` uses `## Version: @project-version@`, which `BigWigsMods/packager` automatically replaces with the exact Git tag string inside the packaged zip archive.
 
 ### Step 3: Commit & Push to `main`
 ```bash
@@ -31,18 +31,7 @@ git push origin main
 ```
 
 ### Step 4: Cut & Push the Semantic Version Tag
-Pushing a `v*` annotated tag triggers `.github/workflows/release.yml`, which:
-1. Runs the LuaJIT test gate on `ubuntu-latest`.
-2. Packages `SimpleHeal/` (excluding `tests/`, `.github/`, `.agents/`, and repo metadata).
-3. Uploads the release archive and `CHANGELOG.md` notes to **GitHub Releases** and **CurseForge (`1786366`)**.
-
 ```bash
 git tag -a vX.Y.Z -m "Release vX.Y.Z"
 git push origin vX.Y.Z
-```
-
-### Step 5: Verify Workflow Status
-```bash
-gh run list --limit 3
-gh run watch
 ```

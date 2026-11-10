@@ -165,40 +165,212 @@ for k, v in pairs(baseDefaults) do
                                                                             end
 
                                                                             -- ---------------------------------------------------------
-                                                                            -- Stored Player Buff Management & Dynamic Selector Window
-                                                                            -- ---------------------------------------------------------
-                                                                            SimpleHealUnitBuffs = SimpleHealUnitBuffs or {}
+-- ---------------------------------------------------------
+-- Stored Player Buff Management & Dynamic Selector Window
+-- ---------------------------------------------------------
+SimpleHealUnitBuffs = SimpleHealUnitBuffs or {}
+local monitoredUnitFrames = setmetatable({}, { __mode = "k" })
+local UnitHasBuff
 
-                                                                            local buffMenu = CreateFrame("Frame", "SimpleHealBuffMenu", UIParent, "BackdropTemplate")
-                                                                            buffMenu:SetSize(170, 200)
-                                                                            buffMenu:SetFrameStrata("DIALOG")
-                                                                            buffMenu:SetClampedToScreen(true)
-                                                                            buffMenu:Hide()
+local buffMenu = CreateFrame("Frame", "SimpleHealBuffMenu", UIParent, "BackdropTemplate")
+buffMenu:SetSize(210, 230)
+buffMenu:SetFrameStrata("DIALOG")
+buffMenu:SetClampedToScreen(true)
+buffMenu:EnableMouse(true)
+if buffMenu.EnableKeyboard then buffMenu:EnableKeyboard(true) end
+if buffMenu.SetPropagateKeyboardInput then buffMenu:SetPropagateKeyboardInput(true) end
+buffMenu:Hide()
 
-                                                                            buffMenu:SetBackdrop({
-                                                                                bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
-                                                                                edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
-                                                                                tile = true, tileSize = 32, edgeSize = 16,
-                                                                                insets = { left = 4, right = 4, top = 4, bottom = 4 }
-                                                                            })
+if type(UISpecialFrames) == "table" then
+    local alreadyRegistered = false
+    for _, name in ipairs(UISpecialFrames) do
+        if name == "SimpleHealBuffMenu" then alreadyRegistered = true; break end
+    end
+    if not alreadyRegistered then
+        table.insert(UISpecialFrames, "SimpleHealBuffMenu")
+    end
+end
 
-                                                                            local buffMenuScroll = CreateFrame("ScrollFrame", "SimpleHealBuffMenuScroll", buffMenu, "UIPanelScrollFrameTemplate")
-                                                                            buffMenuScroll:SetPoint("TOPLEFT", buffMenu, "TOPLEFT", 8, -8)
-                                                                            buffMenuScroll:SetPoint("BOTTOMRIGHT", buffMenu, "BOTTOMRIGHT", -26, 8)
+buffMenu:SetScript("OnKeyDown", function(self, key)
+    if key == "ESCAPE" then
+        if self.SetPropagateKeyboardInput and not InCombatLockdown() then
+            self:SetPropagateKeyboardInput(false)
+        end
+        self:Hide()
+    else
+        if self.SetPropagateKeyboardInput and not InCombatLockdown() then
+            self:SetPropagateKeyboardInput(true)
+        end
+    end
+end)
 
-                                                                            local buffMenuChild = CreateFrame("Frame", "SimpleHealBuffMenuChild", buffMenuScroll)
-                                                                            buffMenuChild:SetSize(136, 100)
-                                                                            buffMenuScroll:SetScrollChild(buffMenuChild)
+buffMenu:SetBackdrop({
+    bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
+    edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
+    tile = true, tileSize = 32, edgeSize = 16,
+    insets = { left = 4, right = 4, top = 4, bottom = 4 }
+})
 
-                                                                            local activeMenuUnitName = nil
-                                                                            local buffMenuButtons = {}
-                                                                            local soloFrame, petFrame
+buffMenu.headerText = buffMenu:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+buffMenu.headerText:SetPoint("TOP", buffMenu, "TOP", 0, -8)
+buffMenu.headerText:SetText("|cFFFFD100Left Click:|r Individual | |cFFFFD100Right Click:|r Class")
+
+local buffMenuScroll = CreateFrame("ScrollFrame", "SimpleHealBuffMenuScroll", buffMenu, "UIPanelScrollFrameTemplate")
+buffMenuScroll:SetPoint("TOPLEFT", buffMenu, "TOPLEFT", 8, -24)
+buffMenuScroll:SetPoint("BOTTOMRIGHT", buffMenu, "BOTTOMRIGHT", -26, 8)
+
+local buffMenuChild = CreateFrame("Frame", "SimpleHealBuffMenuChild", buffMenuScroll)
+buffMenuChild:SetSize(172, 100)
+buffMenuScroll:SetScrollChild(buffMenuChild)
+
+local activeMenuUnit = nil
+local activeMenuUnitName = nil
+local buffMenuButtons = {}
+buffMenu.buttons = buffMenuButtons
+local soloFrame, petFrame
+
+local function GetNameAssignedBuffList(cleanName)
+    if not cleanName or not SimpleHealUnitBuffs then return {} end
+    local raw = SimpleHealUnitBuffs[cleanName]
+    if type(raw) == "string" then
+        if raw == "" or raw == "<Clear / None>" then return {} end
+        return { raw }
+    elseif type(raw) == "table" then
+        local res = {}
+        for _, sp in ipairs(raw) do
+            if type(sp) == "string" and sp ~= "" and sp ~= "<Clear / None>" then
+                table.insert(res, sp)
+            end
+        end
+        return res
+    end
+    return {}
+end
+
+local function GetUnitAssignedBuffList(unit, fallbackCleanName)
+    local cleanName = GetCleanUnitName(unit) or fallbackCleanName
+    local list = GetNameAssignedBuffList(cleanName)
+    if #list == 0 and unit and UnitIsUnit(unit, "player") then
+        list = GetNameAssignedBuffList("player")
+    end
+    return list
+end
+
+local function IsBuffAssignedToName(cleanName, spellName)
+    if not cleanName or not spellName then return false end
+    local list = GetNameAssignedBuffList(cleanName)
+    for _, sp in ipairs(list) do
+        if sp == spellName then return true end
+    end
+    return false
+end
+
+local function SetBuffAssignedForName(cleanName, spellName, enabled)
+    if not cleanName or not spellName then return end
+    local list = GetNameAssignedBuffList(cleanName)
+    local newList = {}
+    local found = false
+    for _, sp in ipairs(list) do
+        if sp == spellName then
+            found = true
+            if enabled then
+                table.insert(newList, sp)
+            end
+        else
+            table.insert(newList, sp)
+        end
+    end
+    if enabled and not found then
+        table.insert(newList, spellName)
+    end
+    if #newList == 0 then
+        SimpleHealUnitBuffs[cleanName] = nil
+    else
+        SimpleHealUnitBuffs[cleanName] = newList
+    end
+end
+
+local function GetSafeUnitClass(unit)
+    if not unit or not UnitExists(unit) or not UnitClass then return nil, nil end
+    local ok, classDisplayName, classFilename = pcall(UnitClass, unit)
+    if not ok then return nil, nil end
+    if issecretvalue and ((classFilename and issecretvalue(classFilename)) or (classDisplayName and issecretvalue(classDisplayName))) then
+        return nil, nil
+    end
+    return classDisplayName, classFilename
+end
+
+local function GetGroupNamesOfClass(targetUnit, fallbackCleanName)
+    local names = {}
+    local seen = {}
+    local function addName(n)
+        if n and n ~= "" and not seen[n] then
+            seen[n] = true
+            table.insert(names, n)
+        end
+    end
+
+    local classDisplayName, targetClass = GetSafeUnitClass(targetUnit)
+    addName(fallbackCleanName)
+
+    if targetClass then
+        local function checkUnit(u)
+            if u and UnitExists(u) then
+                local _, uClass = GetSafeUnitClass(u)
+                if uClass and uClass == targetClass then
+                    addName(GetCleanUnitName(u))
+                end
+            end
+        end
+
+        checkUnit("player")
+        for i = 1, 4 do checkUnit("party" .. i) end
+        for i = 1, 40 do checkUnit("raid" .. i) end
+        if monitoredUnitFrames then
+            for uFrame, _ in pairs(monitoredUnitFrames) do
+                local u = (uFrame.GetAttribute and uFrame:GetAttribute("unit")) or uFrame.unit or uFrame.displayedUnit
+                checkUnit(u)
+            end
+        end
+    end
+
+    return names, classDisplayName or targetClass or "Class"
+end
+
+local function EvaluateUnitBuffs(unit, assignedList)
+    if not assignedList or #assignedList == 0 then
+        return true, nil, false, 0
+    end
+    if not unit or not UnitExists(unit) or not UnitHasBuff then
+        return false, assignedList[1], false, #assignedList
+    end
+    local firstMissing = nil
+    local missingCount = 0
+    local anySecret = false
+    for _, buffName in ipairs(assignedList) do
+        local hasOne, sawSecret = UnitHasBuff(unit, buffName)
+        if sawSecret then anySecret = true end
+        if not hasOne then
+            missingCount = missingCount + 1
+            if not firstMissing then
+                firstMissing = buffName
+            end
+        end
+    end
+    return (missingCount == 0), firstMissing, anySecret, missingCount
+end
 
 local function GetStoredBuffMacroForUnitFrame(uFrame)
     local unit = (uFrame and uFrame.GetAttribute and uFrame:GetAttribute("unit")) or (uFrame and (uFrame.unit or uFrame.displayedUnit)) or "player"
-    local cleanName = GetCleanUnitName(unit)
+    local assignedList = GetUnitAssignedBuffList(unit, uFrame and uFrame._lastCleanName)
     local fallbackDefault = knownClassSpells[1] or "Flash of Light"
-    local spell = (cleanName and SimpleHealUnitBuffs[cleanName]) or SimpleHealUnitBuffs["player"] or fallbackDefault
+    local spell = fallbackDefault
+    if #assignedList == 1 then
+        spell = assignedList[1]
+    elseif #assignedList > 1 then
+        local _, firstMissing = EvaluateUnitBuffs(unit, assignedList)
+        spell = firstMissing or assignedList[1]
+    end
     return "/use [@mouseover,help,nodead][@unit,help,nodead][@player] " .. spell
 end
 
@@ -206,96 +378,154 @@ local function UpdateFrameStoredBuffMacro(uFrame)
     if not uFrame or InCombatLockdown() then return end
     local macroText = GetStoredBuffMacroForUnitFrame(uFrame)
 
-    uFrame:SetAttribute("ctrl-alt-shift-type1", "macro")
-    uFrame:SetAttribute("ctrl-alt-shift-macrotext1", macroText)
-    uFrame:SetAttribute("alt-ctrl-shift-type1", "macro")
-    uFrame:SetAttribute("alt-ctrl-shift-macrotext1", macroText)
-end
-
-local function SelectBuffForUnit(spellName)
-    if activeMenuUnitName then
-        if spellName == "<Clear / None>" or spellName == "" then
-            SimpleHealUnitBuffs[activeMenuUnitName] = nil
-            print("|cFF00FF00[SimpleHeal]|r Cleared buff assignment for |cFFFFD100[" .. activeMenuUnitName .. "]|r")
-        else
-            SimpleHealUnitBuffs[activeMenuUnitName] = spellName
-            print("|cFF00FF00[SimpleHeal]|r Set |cFFFFD100[" .. activeMenuUnitName .. "]|r -> |cFF00FFFF" .. spellName .. "|r")
-        end
-
-        if not InCombatLockdown() then
-            if frame.ApplyBindings then
-                frame:ApplyBindings()
-            else
-                if ClickCastFrames then
-                    for uFrame, _ in pairs(ClickCastFrames) do UpdateFrameStoredBuffMacro(uFrame) end
-                end
-                for i = 1, 40 do
-                    UpdateFrameStoredBuffMacro(_G["CompactRaidFrame" .. i])
-                    UpdateFrameStoredBuffMacro(_G["CompactRaidPet" .. i])
-                end
-                for i = 1, 5 do
-                    UpdateFrameStoredBuffMacro(_G["CompactPartyFrameMember" .. i])
-                    UpdateFrameStoredBuffMacro(_G["CompactPartyFrameGroup1Member" .. i])
-                    UpdateFrameStoredBuffMacro(_G["PartyMemberFrame" .. i])
-                end
-                if soloFrame then UpdateFrameStoredBuffMacro(soloFrame) end
-                if petFrame then UpdateFrameStoredBuffMacro(petFrame) end
-            end
-        end
-        if monitoredUnitFrames then
-            for uFrame, _ in pairs(monitoredUnitFrames) do
-                uFrame._lastKnownHasBuff = nil
-            end
-        end
-        if UpdateAllBuffAlerts then UpdateAllBuffAlerts() end
+    if GetSetting("ctrlaltshift1") == "caststoredbuff" then
+        uFrame:SetAttribute("ctrl-alt-shift-type1", "macro")
+        uFrame:SetAttribute("ctrl-alt-shift-macrotext1", macroText)
+        uFrame:SetAttribute("alt-ctrl-shift-type1", "macro")
+        uFrame:SetAttribute("alt-ctrl-shift-macrotext1", macroText)
     end
-    buffMenu:Hide()
+    if GetSetting("ctrlaltshift2") == "caststoredbuff" then
+        uFrame:SetAttribute("ctrl-alt-shift-type2", "macro")
+        uFrame:SetAttribute("ctrl-alt-shift-macrotext2", macroText)
+        uFrame:SetAttribute("alt-ctrl-shift-type2", "macro")
+        uFrame:SetAttribute("alt-ctrl-shift-macrotext2", macroText)
+    end
 end
 
-                                                                                                                local function RefreshBuffSelectorButtons()
-                                                                                                                for _, btn in ipairs(buffMenuButtons) do btn:Hide() end
+local RefreshBuffSelectorButtons
+
+local function SyncStoredBuffState()
+    if not InCombatLockdown() then
+        if frame.ApplyBindings then
+            frame:ApplyBindings()
+        else
+            if ClickCastFrames then
+                for uFrame, _ in pairs(ClickCastFrames) do UpdateFrameStoredBuffMacro(uFrame) end
+            end
+            for i = 1, 40 do
+                UpdateFrameStoredBuffMacro(_G["CompactRaidFrame" .. i])
+                UpdateFrameStoredBuffMacro(_G["CompactRaidPet" .. i])
+            end
+            for i = 1, 5 do
+                UpdateFrameStoredBuffMacro(_G["CompactPartyFrameMember" .. i])
+                UpdateFrameStoredBuffMacro(_G["CompactPartyFrameGroup1Member" .. i])
+                UpdateFrameStoredBuffMacro(_G["PartyMemberFrame" .. i])
+            end
+            if soloFrame then UpdateFrameStoredBuffMacro(soloFrame) end
+            if petFrame then UpdateFrameStoredBuffMacro(petFrame) end
+        end
+    end
+    if monitoredUnitFrames then
+        for uFrame, _ in pairs(monitoredUnitFrames) do
+            uFrame._lastKnownHasBuff = nil
+        end
+    end
+    if UpdateAllBuffAlerts then UpdateAllBuffAlerts() end
+    if buffMenu:IsShown() and RefreshBuffSelectorButtons then
+        RefreshBuffSelectorButtons()
+    end
+end
+
+local function SelectBuffForUnit(spellName, mouseButton)
+    if not activeMenuUnitName then return end
+
+    local isRightClick = (mouseButton == "RightButton")
+
+    if spellName == "<Clear / None>" or spellName == "" then
+        if isRightClick then
+            local names, classLabel = GetGroupNamesOfClass(activeMenuUnit, activeMenuUnitName)
+            for _, n in ipairs(names) do
+                SimpleHealUnitBuffs[n] = nil
+            end
+            print("|cFF00FF00[SimpleHeal]|r Cleared all buff assignments for class |cFFFFD100[" .. classLabel .. "]|r")
+        else
+            SimpleHealUnitBuffs[activeMenuUnitName] = nil
+            print("|cFF00FF00[SimpleHeal]|r Cleared all buff assignments for |cFFFFD100[" .. activeMenuUnitName .. "]|r")
+        end
+    else
+        local currentlyEnabled = IsBuffAssignedToName(activeMenuUnitName, spellName)
+        local nextState = not currentlyEnabled
+        local stateText = nextState and "|cFF00FF00ON|r" or "|cFFFF5555OFF|r"
+
+        if isRightClick then
+            local names, classLabel = GetGroupNamesOfClass(activeMenuUnit, activeMenuUnitName)
+            for _, n in ipairs(names) do
+                SetBuffAssignedForName(n, spellName, nextState)
+            end
+            print("|cFF00FF00[SimpleHeal]|r Class |cFFFFD100[" .. classLabel .. "]|r -> |cFF00FFFF" .. spellName .. "|r: " .. stateText)
+        else
+            SetBuffAssignedForName(activeMenuUnitName, spellName, nextState)
+            print("|cFF00FF00[SimpleHeal]|r |cFFFFD100[" .. activeMenuUnitName .. "]|r -> |cFF00FFFF" .. spellName .. "|r: " .. stateText)
+        end
+    end
+
+    SyncStoredBuffState()
+end
+
+RefreshBuffSelectorButtons = function()
+    for _, btn in ipairs(buffMenuButtons) do btn:Hide() end
 
     local classSpells = (#knownClassSpells > 0) and knownClassSpells or { "Blessing of Might", "Blessing of Wisdom", "Blessing of Kings", "Blessing of Protection" }
     local list = { "<Clear / None>" }
     for _, sp in ipairs(classSpells) do table.insert(list, sp) end
-                                                                                                                    local buttonHeight = 22
-                                                                                                                    buffMenuChild:SetHeight(#list * buttonHeight + 10)
+    local buttonHeight = 22
+    buffMenuChild:SetHeight(#list * buttonHeight + 10)
 
-                                                                                                                    for i, spell in ipairs(list) do
-                                                                                                                        local btn = buffMenuButtons[i]
-                                                                                                                        if not btn then
-                                                                                                                            btn = CreateFrame("Button", nil, buffMenuChild, "UIPanelButtonTemplate")
-                                                                                                                            btn:SetSize(130, 20)
-                                                                                                                            table.insert(buffMenuButtons, btn)
-                                                                                                                            end
-                                                                                                                            btn:SetPoint("TOPLEFT", buffMenuChild, "TOPLEFT", 2, -((i - 1) * buttonHeight))
-                                                                                                                            btn:SetText(spell)
-                                                                                                                            btn:SetScript("OnClick", function() SelectBuffForUnit(spell) end)
-                                                                                                                            btn:Show()
-                                                                                                                            end
-                                                                                                                            end
+    for i, spell in ipairs(list) do
+        local btn = buffMenuButtons[i]
+        if not btn then
+            btn = CreateFrame("Button", nil, buffMenuChild, "UIPanelButtonTemplate")
+            btn:SetSize(166, 20)
+            if btn.RegisterForClicks then
+                btn:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+            end
+            table.insert(buffMenuButtons, btn)
+        end
+        btn:SetPoint("TOPLEFT", buffMenuChild, "TOPLEFT", 2, -((i - 1) * buttonHeight))
+        btn.spellName = spell
 
-                                                                                                                            function SimpleHeal_OpenBuffSelector(unitFrame)
-                                                                                                                            if InCombatLockdown() then
-                                                                                                                                print("|cFFFF0000[SimpleHeal]|r Cannot change target buff mappings during combat!")
-                                                                                                                                return
-                                                                                                                                end
-                                                                                                                                local unit = unitFrame:GetAttribute("unit") or "player"
-                                                                                                                                activeMenuUnitName = GetCleanUnitName(unit)
+        if spell == "<Clear / None>" then
+            btn.isToggled = false
+            btn:SetText("|cFFFF8888<Clear All>|r")
+        else
+            local enabled = activeMenuUnitName and IsBuffAssignedToName(activeMenuUnitName, spell) or false
+            btn.isToggled = enabled
+            if enabled then
+                btn:SetText("|cFF00FF00[x] " .. spell .. "|r")
+            else
+                btn:SetText("|cFF888888[ ]|r " .. spell)
+            end
+        end
 
-                                                                                                                                if not activeMenuUnitName then return end
+        btn:SetScript("OnClick", function(_, mouseButton)
+            SelectBuffForUnit(spell, mouseButton or "LeftButton")
+        end)
+        btn:Show()
+    end
+end
 
-                                                                                                                                    RefreshBuffSelectorButtons()
-                                                                                                                                    local x, y = GetCursorPosition()
-                                                                                                                                    local scale = UIParent:GetEffectiveScale()
-                                                                                                                                    buffMenu:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", x / scale, y / scale)
-                                                                                                                                    buffMenu:Show()
-                                                                                                                                    end
+function SimpleHeal_OpenBuffSelector(unitFrame)
+    if InCombatLockdown() then
+        print("|cFFFF0000[SimpleHeal]|r Cannot change target buff mappings during combat!")
+        return
+    end
+    local unit = (unitFrame and unitFrame.GetAttribute and unitFrame:GetAttribute("unit")) or (unitFrame and (unitFrame.unit or unitFrame.displayedUnit)) or "player"
+    activeMenuUnit = unit
+    activeMenuUnitName = GetCleanUnitName(unit)
+
+    if not activeMenuUnitName then return end
+
+    RefreshBuffSelectorButtons()
+    local x, y = GetCursorPosition()
+    local scale = UIParent:GetEffectiveScale()
+    buffMenu:ClearAllPoints()
+    buffMenu:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", x / scale, y / scale)
+    buffMenu:Show()
+end
 
 -- ---------------------------------------------------------
 -- Missing Buff Alert System (Outline & ~ Name ~ Indicator)
 -- ---------------------------------------------------------
-local monitoredUnitFrames = setmetatable({}, { __mode = "k" })
 
 local function SafeCompare(a, b)
     return a == b
@@ -480,7 +710,7 @@ local function CheckSingleBuff(unit, nameToCheck)
     return false, sawSecret
 end
 
-local function UnitHasBuff(unit, spellName)
+UnitHasBuff = function(unit, spellName)
     if not unit or not spellName or not UnitExists(unit) then return false, false end
     local equivalents = buffEquivalents[spellName] or { spellName }
     local anySecret = false
@@ -558,13 +788,11 @@ local function UpdateFrameBuffAlert(unitFrame)
     end
     unitFrame._lastCleanName = cleanName
 
-    local assignedBuff = SimpleHealUnitBuffs[cleanName]
-    if not assignedBuff and UnitIsUnit(unit, "player") then
-        assignedBuff = SimpleHealUnitBuffs["player"]
-    end
-
-    if not assignedBuff or assignedBuff == "" then
+    local assignedList = GetUnitAssignedBuffList(unit, cleanName)
+    if #assignedList == 0 then
         unitFrame._lastKnownHasBuff = nil
+        unitFrame._preCombatMissingCount = nil
+        unitFrame._lastFirstMissingBuff = nil
         if overlay then
             if overlay.leftTag then overlay.leftTag:Hide() end
             if overlay.rightTag then overlay.rightTag:Hide() end
@@ -573,7 +801,7 @@ local function UpdateFrameBuffAlert(unitFrame)
         return
     end
 
-    local hasBuff, sawSecret = UnitHasBuff(unit, assignedBuff)
+    local hasBuff, firstMissingBuff, sawSecret, missingCount = EvaluateUnitBuffs(unit, assignedList)
     if not hasBuff and InCombatLockdown() then
         -- WoW 12.0 restricts reading unit auras during combat (secret values / taint guard).
         -- Preserve the unit's pre-combat buff state (or true if unknown) so the alert
@@ -587,6 +815,11 @@ local function UpdateFrameBuffAlert(unitFrame)
         end
     else
         unitFrame._lastKnownHasBuff = hasBuff
+        unitFrame._preCombatMissingCount = missingCount
+        if not InCombatLockdown() and unitFrame._lastFirstMissingBuff ~= firstMissingBuff then
+            unitFrame._lastFirstMissingBuff = firstMissingBuff
+            UpdateFrameStoredBuffMacro(unitFrame)
+        end
     end
 
     if not hasBuff then
@@ -1126,6 +1359,11 @@ local function BindFrame(unitFrame)
         unitFrame:HookScript("PostClick", function(self, button, down)
             if down then
                 self._pendingClickAction = GetActiveBindingForClick(button) or ""
+                if self._pendingClickAction ~= "openbuffmenu" and buffMenu:IsShown() then
+                    if not (buffMenu.IsMouseOver and buffMenu:IsMouseOver()) then
+                        buffMenu:Hide()
+                    end
+                end
                 return
             end
             local action = self._pendingClickAction
@@ -1140,17 +1378,30 @@ local function BindFrame(unitFrame)
             elseif InCombatLockdown() and action and action ~= "" and action ~= "target" then
                 local unit = (self.GetAttribute and self:GetAttribute("unit")) or self.unit or self.displayedUnit
                 local cleanName = GetCleanUnitName(unit) or self._lastCleanName
-                local assignedBuff = (cleanName and SimpleHealUnitBuffs[cleanName]) or (unit and UnitIsUnit(unit, "player") and SimpleHealUnitBuffs["player"])
-                if assignedBuff then
-                    local matched = (action == "caststoredbuff" or action == assignedBuff)
-                    if not matched and buffEquivalents[assignedBuff] then
-                        for _, eq in ipairs(buffEquivalents[assignedBuff]) do
-                            if action == eq then matched = true; break end
+                local assignedList = GetUnitAssignedBuffList(unit, cleanName)
+                if #assignedList > 0 then
+                    local matched = (action == "caststoredbuff")
+                    if not matched then
+                        for _, assignedBuff in ipairs(assignedList) do
+                            if action == assignedBuff then
+                                matched = true
+                                break
+                            end
+                            if buffEquivalents[assignedBuff] then
+                                for _, eq in ipairs(buffEquivalents[assignedBuff]) do
+                                    if action == eq then matched = true; break end
+                                end
+                            end
+                            if matched then break end
                         end
                     end
                     if matched then
-                        self._lastKnownHasBuff = true
-                        UpdateFrameBuffAlert(self)
+                        local remaining = (self._preCombatMissingCount or 1) - 1
+                        self._preCombatMissingCount = remaining
+                        if remaining <= 0 then
+                            self._lastKnownHasBuff = true
+                            UpdateFrameBuffAlert(self)
+                        end
                     end
                 end
             end
@@ -1259,6 +1510,7 @@ end
                                                                                                                                                                                                                                                                 frame:RegisterEvent("UNIT_PET")
                                                                                                                                                                                                                                                                 frame:RegisterEvent("PET_UI_UPDATE")
 frame:RegisterEvent("UNIT_AURA")
+frame:RegisterEvent("GLOBAL_MOUSE_DOWN")
 
         frame:SetScript("OnEvent", function(self, event, arg1)
         if event == "ADDON_LOADED" and arg1 == addonName then
@@ -1297,8 +1549,12 @@ frame:RegisterEvent("UNIT_AURA")
                                                                                                                                                                                                                                 if arg1 == "player" or arg1 == "pet" then RequestSoloStatsUpdate() end
     elseif event == "UNIT_AURA" then
         RequestBuffAlertsUpdate()
-                                                                                                                                                                                                                                                                end
-                                                                                                                                                                                                                                                                end)
+    elseif event == "GLOBAL_MOUSE_DOWN" then
+        if buffMenu:IsShown() and not (buffMenu.IsMouseOver and buffMenu:IsMouseOver()) then
+            buffMenu:Hide()
+        end
+    end
+end)
 
 if C_Timer and C_Timer.NewTicker then
     C_Timer.NewTicker(1.0, UpdateAllBuffAlerts)
