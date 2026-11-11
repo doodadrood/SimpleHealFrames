@@ -995,6 +995,32 @@ run_test("15. Right-Click Class-Wide Buff Assignment & Escape / Click-Away Menu 
     assert_true(not buffMenu:IsShown(), "Clicking outside buffMenu must close it")
 end)
 
+run_test("16. Multi-Buff Cycling by Lowest Duration & /shf buffcycle Command", function()
+    SimpleHealUnitBuffs = {
+        Jaina = { "Divine Spirit", "Power Word: Fortitude" }
+    }
+    -- Out of combat: both present, Fortitude has lower expiration time (50s left) vs Divine Spirit (1000s left)
+    mockState.units.raid1.buffs = {
+        [1] = { name = "Divine Spirit", spellId = 14752, duration = 1800, expirationTime = 1000 },
+        [2] = { name = "Power Word: Fortitude", spellId = 1243, duration = 1800, expirationTime = 50 },
+    }
+    mainEventFrame:FireEvent("UNIT_AURA", "raid1")
+    flush_timers()
+
+    local macro = raidFrame1:GetAttribute("ctrl-alt-shift-macrotext1")
+    assert_true(macro ~= nil, "Macro must exist for multi-buff player")
+    assert_true(macro:find("Power Word: Fortitude", 1, true) ~= nil,
+        "Lowest duration buff (Fortitude) must be prioritized out of combat")
+    assert_true(macro:find("/castsequence [combat", 1, true) ~= nil,
+        "Macro must include combat /castsequence")
+
+    -- Test /shf buffcycle slash command
+    SlashCmdList["SIMPLEHEAL"]("buffcycle 10")
+    assert_eq(SimpleHealSettings.buffCycleReset, 10, "buffCycleReset setting updated to 10")
+    local updatedMacro = raidFrame1:GetAttribute("ctrl-alt-shift-macrotext1")
+    assert_true(updatedMacro:find("reset=10.") ~= nil, "Macro sequence reset seconds updated to 10")
+end)
+
 test_print("=================================================================")
 test_print(string.format("Results: %d passed, %d failed", passed, failed))
 test_print("=================================================================")

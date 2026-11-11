@@ -14,7 +14,8 @@ local baseDefaults = {
     ctrlaltshift2 = "openbuffmenu",
     buffAlertEnabled = true,
     buffAlertOutline = true,
-    buffAlertTags = true
+    buffAlertTags = true,
+    buffCycleReset = 5
 }
 
 -- Per-Class Default Profiles
@@ -171,6 +172,7 @@ for k, v in pairs(baseDefaults) do
 SimpleHealUnitBuffs = SimpleHealUnitBuffs or {}
 local monitoredUnitFrames = setmetatable({}, { __mode = "k" })
 local UnitHasBuff
+local GetBuffExpiration
 
 local buffMenu = CreateFrame("Frame", "SimpleHealBuffMenu", UIParent, "BackdropTemplate")
 buffMenu:SetSize(210, 230)
@@ -360,23 +362,80 @@ local function EvaluateUnitBuffs(unit, assignedList)
     return (missingCount == 0), firstMissing, anySecret, missingCount
 end
 
+-- ---------------------------------------------------------
+-- Multi-Buff Cycling (Ctrl+Alt+Shift cast stored buff)
+-- Out of combat: the macro always casts the most-needed buff (missing buffs
+--   first, then the buff with the lowest remaining duration). It is rebuilt on
+--   every aura change, so repeated clicks walk through every assigned buff and
+--   refresh the shortest one each time.
+-- In combat: aura data is restricted and secure attributes are locked, so a
+--   /castsequence (pre-sorted by the same priority before combat) advances to
+--   the next buff after each successful cast and resets to the top of the list
+--   after `buffCycleReset` seconds without a click.
+-- ---------------------------------------------------------
+local nextBuffCycleId = 0
+
+local function GetBuffCycleResetSeconds()
+    local v = tonumber(GetSetting("buffCycleReset"))
+    if not v or v < 1 then v = 5 end
+    if v > 60 then v = 60 end
+    return math.floor(v)
+end
+
+local function GetBuffPriorityOrder(unit, assignedList)
+    local entries = {}
+    local canRead = unit and UnitExists(unit) and UnitHasBuff
+    for idx, buffName in ipairs(assignedList) do
+        local missing, expiration = false, math.huge
+        if canRead then
+            if not UnitHasBuff(unit, buffName) then
+                missing = true
+            elseif GetBuffExpiration then
+                expiration = GetBuffExpiration(unit, buffName) or math.huge
+            end
+        end
+        entries[#entries + 1] = { name = buffName, idx = idx, missing = missing, exp = expiration }
+    end
+    table.sort(entries, function(a, b)
+        if a.missing ~= b.missing then return a.missing end
+        if not a.missing and a.exp ~= b.exp then return a.exp < b.exp end
+        return a.idx < b.idx
+    end)
+    local order = {}
+    for i, e in ipairs(entries) do order[i] = e.name end
+    return order
+end
+
 local function GetStoredBuffMacroForUnitFrame(uFrame)
     local unit = (uFrame and uFrame.GetAttribute and uFrame:GetAttribute("unit")) or (uFrame and (uFrame.unit or uFrame.displayedUnit)) or "player"
     local assignedList = GetUnitAssignedBuffList(unit, uFrame and uFrame._lastCleanName)
     local fallbackDefault = knownClassSpells[1] or "Flash of Light"
-    local spell = fallbackDefault
-    if #assignedList == 1 then
-        spell = assignedList[1]
-    elseif #assignedList > 1 then
-        local _, firstMissing = EvaluateUnitBuffs(unit, assignedList)
-        spell = firstMissing or assignedList[1]
+    if #assignedList <= 1 then
+        return "/use [@mouseover,help,nodead][@unit,help,nodead][@player] " .. (assignedList[1] or fallbackDefault)
     end
-    return "/use [@mouseover,help,nodead][@unit,help,nodead][@player] " .. spell
+
+    local order = GetBuffPriorityOrder(unit, assignedList)
+
+    -- Each frame gets a unique fractional reset value so its /castsequence keeps
+    -- its own position (sequence state is keyed by the macro text), meaning
+    -- clicking a different player always starts at the top of *their* list.
+    if uFrame and not uFrame._simpleHealCycleId then
+        nextBuffCycleId = nextBuffCycleId + 1
+        uFrame._simpleHealCycleId = nextBuffCycleId
+    end
+    local cycleId = ((uFrame and uFrame._simpleHealCycleId) or 0) % 1000
+    local resetStr = string.format("%d.%03d", GetBuffCycleResetSeconds(), cycleId)
+
+    return "/use [nocombat,@mouseover,help,nodead][nocombat,@unit,help,nodead][nocombat,@player] " .. order[1]
+        .. "\n/castsequence [combat,@mouseover,help,nodead][combat,@unit,help,nodead][combat,@player] reset="
+        .. resetStr .. " " .. table.concat(order, ", ")
 end
 
 local function UpdateFrameStoredBuffMacro(uFrame)
     if not uFrame or InCombatLockdown() then return end
     local macroText = GetStoredBuffMacroForUnitFrame(uFrame)
+    if uFrame._storedBuffMacroText == macroText then return end
+    uFrame._storedBuffMacroText = macroText
 
     if GetSetting("ctrlaltshift1") == "caststoredbuff" then
         uFrame:SetAttribute("ctrl-alt-shift-type1", "macro")
@@ -726,6 +785,88 @@ UnitHasBuff = function(unit, spellName)
     return false, anySecret
 end
 
+-- Converts aura duration / expiration into a sortable expiration time.
+-- Returns math.huge for auras without a duration, or nil when unreadable (secret).
+local function ReadAuraExpiration(duration, expirationTime)
+    if issecretvalue and ((duration ~= nil and issecretvalue(duration)) or (expirationTime ~= nil and issecretvalue(expirationTime))) then
+        return nil
+    end
+    if type(expirationTime) ~= "number" or expirationTime <= 0 then return math.huge end
+    if type(duration) == "number" and duration <= 0 then return math.huge end
+    return expirationTime
+end
+
+local function GetSingleBuffExpiration(unit, nameToCheck)
+    if (unit == "player" or UnitIsUnit(unit, "player")) and C_UnitAuras and C_UnitAuras.GetPlayerAuraBySpellID then
+        local spellID = GetCachedSpellID(nameToCheck)
+        if spellID then
+            local ok, aura = pcall(C_UnitAuras.GetPlayerAuraBySpellID, spellID)
+            if ok and aura then
+                local exp = ReadAuraExpiration(aura.duration, aura.expirationTime)
+                if exp then return exp end
+            end
+        end
+    end
+
+    if C_UnitAuras and C_UnitAuras.GetAuraDataBySpellName then
+        -- Prefer our own cast of the buff, then anyone's
+        local ok, aura = pcall(C_UnitAuras.GetAuraDataBySpellName, unit, nameToCheck, "HELPFUL|PLAYER")
+        if not (ok and aura) then
+            ok, aura = pcall(C_UnitAuras.GetAuraDataBySpellName, unit, nameToCheck, "HELPFUL")
+        end
+        if ok and aura then
+            local exp = ReadAuraExpiration(aura.duration, aura.expirationTime)
+            if exp then return exp end
+        end
+    end
+
+    if AuraUtil and AuraUtil.FindAuraByName then
+        local ok, name, _, _, _, duration, expirationTime = pcall(AuraUtil.FindAuraByName, nameToCheck, unit, "HELPFUL")
+        if ok and name then
+            local exp = ReadAuraExpiration(duration, expirationTime)
+            if exp then return exp end
+        end
+    end
+
+    if C_UnitAuras and C_UnitAuras.GetAuraDataByIndex then
+        for i = 1, 40 do
+            local ok, aura = pcall(C_UnitAuras.GetAuraDataByIndex, unit, i, "HELPFUL")
+            if ok and not aura then break end
+            if ok and aura and aura.name and not (issecretvalue and issecretvalue(aura.name)) then
+                local okc, match = pcall(SafeCompare, aura.name, nameToCheck)
+                if okc and match then
+                    local exp = ReadAuraExpiration(aura.duration, aura.expirationTime)
+                    if exp then return exp end
+                end
+            end
+        end
+    elseif UnitAura then
+        for i = 1, 40 do
+            local ok, aName, _, _, _, duration, expirationTime = pcall(UnitAura, unit, i, "HELPFUL")
+            if ok and not aName then break end
+            if ok and aName and not (issecretvalue and issecretvalue(aName)) then
+                local okc, match = pcall(SafeCompare, aName, nameToCheck)
+                if okc and match then
+                    local exp = ReadAuraExpiration(duration, expirationTime)
+                    if exp then return exp end
+                end
+            end
+        end
+    end
+
+    return nil
+end
+
+GetBuffExpiration = function(unit, spellName)
+    if not unit or not spellName or not UnitExists(unit) then return nil end
+    local best
+    for _, nameToCheck in ipairs(buffEquivalents[spellName] or { spellName }) do
+        local exp = GetSingleBuffExpiration(unit, nameToCheck)
+        if exp and (not best or exp > best) then best = exp end
+    end
+    return best
+end
+
 local function GetOrCreateBuffAlertOverlay(unitFrame)
     if unitFrame.simpleHealBuffOverlay then
         return unitFrame.simpleHealBuffOverlay
@@ -816,10 +957,6 @@ local function UpdateFrameBuffAlert(unitFrame)
     else
         unitFrame._lastKnownHasBuff = hasBuff
         unitFrame._preCombatMissingCount = missingCount
-        if not InCombatLockdown() and unitFrame._lastFirstMissingBuff ~= firstMissingBuff then
-            unitFrame._lastFirstMissingBuff = firstMissingBuff
-            UpdateFrameStoredBuffMacro(unitFrame)
-        end
     end
 
     if not hasBuff then
@@ -873,7 +1010,25 @@ local function UpdateFrameBuffAlert(unitFrame)
     end
 end
 
+-- Re-sorts the cycling buff macro (missing / lowest remaining duration first) for
+-- every frame with 2+ assigned buffs. Runs regardless of the alert display settings.
+local function RefreshCyclingBuffMacros()
+    if InCombatLockdown() or not SimpleHealUnitBuffs or not next(SimpleHealUnitBuffs) then return end
+    local function refresh(uFrame)
+        if not uFrame then return end
+        local unit = (uFrame.GetAttribute and uFrame:GetAttribute("unit")) or uFrame.unit or uFrame.displayedUnit
+        if not unit or not UnitExists(unit) then return end
+        if #GetUnitAssignedBuffList(unit, uFrame._lastCleanName) > 1 then
+            UpdateFrameStoredBuffMacro(uFrame)
+        end
+    end
+    for uFrame, _ in pairs(monitoredUnitFrames) do refresh(uFrame) end
+    if soloFrame and not monitoredUnitFrames[soloFrame] then refresh(soloFrame) end
+    if petFrame and not monitoredUnitFrames[petFrame] then refresh(petFrame) end
+end
+
 function UpdateAllBuffAlerts()
+    RefreshCyclingBuffMacros()
     local s = SimpleHealSettings or defaults
     if (s and s.buffAlertEnabled == false) or not SimpleHealUnitBuffs or not next(SimpleHealUnitBuffs) then
         for uFrame, _ in pairs(monitoredUnitFrames) do
@@ -1332,9 +1487,11 @@ local function SetActionBinding(unitFrame, modPrefix, btn, val)
         unitFrame:SetAttribute(spellAttr, nil)
         unitFrame:SetAttribute(macroAttr, nil)
     elseif val == "caststoredbuff" then
+        local storedMacro = GetStoredBuffMacroForUnitFrame(unitFrame)
+        unitFrame._storedBuffMacroText = storedMacro
         unitFrame:SetAttribute(typeAttr, "macro")
         unitFrame:SetAttribute(spellAttr, nil)
-        unitFrame:SetAttribute(macroAttr, GetStoredBuffMacroForUnitFrame(unitFrame))
+        unitFrame:SetAttribute(macroAttr, storedMacro)
     else
         unitFrame:SetAttribute(typeAttr, "macro")
         unitFrame:SetAttribute(spellAttr, nil)
@@ -1370,6 +1527,9 @@ local function BindFrame(unitFrame)
             self._pendingClickAction = nil
             if action == nil then
                 action = GetActiveBindingForClick(button)
+            end
+            if action == "caststoredbuff" and not InCombatLockdown() and C_Timer and C_Timer.After then
+                C_Timer.After(0.3, RequestBuffAlertsUpdate)
             end
             if action == "togglemenu" or action == "menu" then
                 OpenUnitContextMenu(self)
@@ -1581,6 +1741,22 @@ end
                                                                                                                                                                                                                                                                 return
                                                                                                                                                                                                                                                                 end
 
+    if input == "buffcycle" or (command and command:lower() == "buffcycle") then
+        SimpleHealSettings = SimpleHealSettings or {}
+        local secs = tonumber(val)
+        if input == "buffcycle" then
+            print("|cFF00FF00[SimpleHeal]|r In-combat buff cycle resets after |cFFFFD100" .. GetBuffCycleResetSeconds() .. "s|r idle. Usage: /shf buffcycle <1-60>")
+            return
+        elseif not secs or secs < 1 or secs > 60 then
+            print("|cFFFF0000[SimpleHeal]|r Usage: /shf buffcycle <seconds 1-60>")
+            return
+        end
+        SimpleHealSettings.buffCycleReset = math.floor(secs)
+        print("|cFF00FF00[SimpleHeal]|r In-combat buff cycle reset set to |cFFFFD100" .. SimpleHealSettings.buffCycleReset .. "s|r")
+        if not InCombatLockdown() and frame.ApplyBindings then frame:ApplyBindings() end
+        return
+    end
+
     if input == "buffalert" then
         SimpleHealSettings = SimpleHealSettings or defaults
         local enabled = not (SimpleHealSettings.buffAlertEnabled ~= false)
@@ -1644,5 +1820,6 @@ end
     print("  /shf buffalert - Toggles missing buff alert on/off")
     print("  /shf buffalert outline - Toggles frame outline only")
     print("  /shf buffalert tags - Toggles name (~) tags only")
+    print("  /shf buffcycle <sec> - In-combat multi-buff cycle reset delay")
                                                                                                                                                                                                                                                                 print("  /shf clearbuffs - Clears stored player buff assignments")
                                                                                                                                                                                                                                                                 end
