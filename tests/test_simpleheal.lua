@@ -532,6 +532,13 @@ raidFrame2:SetAttribute("unit", "raid2")
 raidFrame2.name = raidFrame2:CreateFontString()
 raidFrame2.name:SetText("Nobundo")
 
+_G.CompactUnitFrame_SetUpFrame = function() end
+_G.CompactUnitFrame_SetUnit = function(frame, unit)
+    frame.unit = unit
+    frame.displayedUnit = unit
+    frame:SetAttribute("unit", unit)
+end
+
 -- =========================================================================
 -- Load SimpleHeal.lua
 -- =========================================================================
@@ -1019,6 +1026,43 @@ run_test("16. Multi-Buff Cycling by Lowest Duration & /shf buffcycle Command", f
     assert_eq(SimpleHealSettings.buffCycleReset, 10, "buffCycleReset setting updated to 10")
     local updatedMacro = raidFrame1:GetAttribute("ctrl-alt-shift-macrotext1")
     assert_true(updatedMacro:find("reset=10.") ~= nil, "Macro sequence reset seconds updated to 10")
+end)
+
+run_test("17. Out-of-Zone Target Macro Binding, CompactUnitFrame_SetUnit Sync & Secret Guard", function()
+    local wantParty1 = "/target [@party1,exists][@mouseover,exists]\n/stopmacro [@party1,exists][@mouseover,exists]\n/target party1"
+    assert_eq(partyFrame1:GetAttribute("ctrl-alt-type1"), "macro", "ctrl-alt-type1 uses macro")
+    assert_eq(partyFrame1:GetAttribute("ctrl-alt-macrotext1"), wantParty1, "partyFrame1 target macro resolves party1")
+    assert_eq(partyFrame1:GetAttribute("alt-ctrl-macrotext1"), wantParty1, "alt-ctrl-macrotext1 resolves party1")
+
+    local wantPlayer = "/target [@player,exists][@mouseover,exists]\n/stopmacro [@player,exists][@mouseover,exists]\n/target player"
+    assert_eq(soloFrame:GetAttribute("ctrl-alt-macrotext1"), wantPlayer, "soloFrame target macro resolves player")
+
+    -- Frame set up before unit assignment falls back to @mouseover, then updates on SetUnit
+    local latePartyFrame = CreateFrame("Button", "CompactPartyFrameMember4", UIParent, "SecureUnitButtonTemplate")
+    CompactUnitFrame_SetUpFrame(latePartyFrame)
+    assert_eq(latePartyFrame:GetAttribute("ctrl-alt-macrotext1"), "/target [@mouseover,exists]",
+        "Unassigned frame falls back cleanly to mouseover")
+
+    CompactUnitFrame_SetUnit(latePartyFrame, "party2")
+    local wantParty2 = "/target [@party2,exists][@mouseover,exists]\n/stopmacro [@party2,exists][@mouseover,exists]\n/target party2"
+    assert_eq(latePartyFrame:GetAttribute("ctrl-alt-macrotext1"), wantParty2,
+        "CompactUnitFrame_SetUnit refreshes target macro to newly assigned unit")
+
+    -- Nameplate updates should be ignored by CompactUnitFrame_SetUnit
+    local plateFrame = CreateFrame("Button", "NamePlate1UnitFrame", UIParent, "SecureUnitButtonTemplate")
+    CompactUnitFrame_SetUpFrame(plateFrame)
+    plateFrame._simpleHealBoundUnit = nil
+    CompactUnitFrame_SetUnit(plateFrame, "nameplate1")
+    assert_eq(plateFrame._simpleHealBoundUnit, nil, "Nameplates must not trigger CompactUnitFrame_SetUnit re-bind")
+    assert_eq(plateFrame:GetAttribute("ctrl-alt-macrotext1"), "/target [@mouseover,exists]",
+        "Nameplate target macro must remain unchanged on SetUnit")
+
+    -- Secret unit value on frame must not crash BindFrame / GetTargetMacroForUnitFrame
+    local secretUnitFrame = CreateFrame("Button", "CompactPartyFrameMember5", UIParent, "SecureUnitButtonTemplate")
+    secretUnitFrame:SetAttribute("unit", create_secret_value("unit_token"))
+    CompactUnitFrame_SetUpFrame(secretUnitFrame)
+    assert_eq(secretUnitFrame:GetAttribute("ctrl-alt-macrotext1"), "/target [@mouseover,exists]",
+        "Secret unit token safely falls back to @mouseover")
 end)
 
 test_print("=================================================================")

@@ -1466,6 +1466,25 @@ local function GetActiveBindingForClick(button)
     return GetSetting(modKey .. btnIndex)
 end
 
+-- Resolves a unit frame's non-secret unit token (e.g. "player", "party1", "raid3").
+local function GetUnitFrameToken(uFrame)
+    if not uFrame then return nil end
+    local unit = (uFrame.GetAttribute and uFrame:GetAttribute("unit")) or uFrame.unit or uFrame.displayedUnit
+    if unit == nil or (issecretvalue and issecretvalue(unit)) then return nil end
+    if type(unit) ~= "string" then return nil end
+    if unit == "" or unit == "none" or not string.match(unit, "^[%w_%-]+$") then return nil end
+    return unit
+end
+
+-- Targets the frame's unit token directly so out-of-zone members target reliably even when mouseover is false.
+local function GetTargetMacroForUnitFrame(uFrame)
+    local unit = GetUnitFrameToken(uFrame)
+    if not unit then
+        return "/target [@mouseover,exists]"
+    end
+    return "/target [@" .. unit .. ",exists][@mouseover,exists]\n/stopmacro [@" .. unit .. ",exists][@mouseover,exists]\n/target " .. unit
+end
+
 local function SetActionBinding(unitFrame, modPrefix, btn, val)
     local prefix = ""
     if modPrefix and modPrefix ~= "" then prefix = modPrefix .. "-" end
@@ -1481,7 +1500,7 @@ local function SetActionBinding(unitFrame, modPrefix, btn, val)
     elseif val == "target" then
         unitFrame:SetAttribute(typeAttr, "macro")
         unitFrame:SetAttribute(spellAttr, nil)
-        unitFrame:SetAttribute(macroAttr, "/target [@mouseover,exists][@unit,exists]")
+        unitFrame:SetAttribute(macroAttr, GetTargetMacroForUnitFrame(unitFrame))
     elseif val == "togglemenu" or val == "menu" or val == "openbuffmenu" then
         unitFrame:SetAttribute(typeAttr, "attribute")
         unitFrame:SetAttribute(spellAttr, nil)
@@ -1505,6 +1524,7 @@ local function BindFrame(unitFrame)
     UpdateFrameBuffAlert(unitFrame)
     if InCombatLockdown() then return end
 
+    unitFrame._simpleHealBoundUnit = GetUnitFrameToken(unitFrame)
     unitFrame:RegisterForClicks("AnyDown", "AnyUp")
 
     -- Clear wildcard attributes so unbound right-click modifiers on Blizzard party/raid frames
@@ -1647,6 +1667,16 @@ end
                                                                                                                                                                                                                                                                 hooksecurefunc("CompactUnitFrame_SetUpFrame", function(unitFrame)
                                                                                                                                                                                                                                                                 if unitFrame and not InCombatLockdown() then BindFrame(unitFrame) end
                                                                                                                                                                                                                                                                 end)
+
+                                                                                                                                                                                                                                                                if CompactUnitFrame_SetUnit then
+                                                                                                                                                                                                                                                                hooksecurefunc("CompactUnitFrame_SetUnit", function(unitFrame, unit)
+                                                                                                                                                                                                                                                                if not unitFrame or not monitoredUnitFrames[unitFrame] or InCombatLockdown() then return end
+                                                                                                                                                                                                                                                                if unit ~= nil and ((issecretvalue and issecretvalue(unit)) or (type(unit) == "string" and string.find(unit, "^nameplate"))) then return end
+                                                                                                                                                                                                                                                                local resolvedUnit = GetUnitFrameToken(unitFrame)
+                                                                                                                                                                                                                                                                if resolvedUnit and string.find(resolvedUnit, "^nameplate") then return end
+                                                                                                                                                                                                                                                                if unitFrame._simpleHealBoundUnit ~= resolvedUnit then BindFrame(unitFrame) end
+                                                                                                                                                                                                                                                                end)
+                                                                                                                                                                                                                                                                end
 
                                                                                                                                                                                                                                                                 if CompactRaidFrameContainer_UpdateLayout then
                                                                                                                                                                                                                                                                 hooksecurefunc("CompactRaidFrameContainer_UpdateLayout", function()
