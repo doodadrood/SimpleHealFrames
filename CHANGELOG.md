@@ -1,5 +1,9 @@
 # SimpleHeal Changelog
 
+## v1.1.8 (2026-11-12)
+- **Out-of-Zone `target` Binding Fix**: Updated the `"target"` click-casting action to target the frame's resolved unit token directly (with `[@mouseover,exists]` and `/target <unit>` fallbacks) instead of the invalid literal `[@unit,exists]` condition, fixing targeting of party and raid members outside the player's zone.
+- **Dynamic Frame Unit Sync & Secret Value Guard**: Added `CompactUnitFrame_SetUnit` hooking (ignoring nameplates) and secret-value checks (`issecretvalue`) so unit frame target macros stay current across group/raid roster changes without taint errors.
+
 ## v1.1.7 (2026-11-11)
 - **Multi-Buff Dynamic Duration Cycling (`Ctrl+Alt+Shift+Left-Click`)**: Casting stored buffs on a player with multiple assigned buffs now intelligently cycles through all of them instead of only recasting the first buff:
   - **Out of Combat**: Evaluates remaining aura durations across all assigned buffs and automatically prioritizes any missing buffs first, followed by whichever buff has the shortest remaining duration. Rapid clicks seamlessly refresh each buff as they run low.
